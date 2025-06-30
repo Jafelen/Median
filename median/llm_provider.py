@@ -1,6 +1,13 @@
 import os
 
-from mlx_lm import generate, load
+try:
+    from mlx_lm import generate, load
+    _USE_MLX = True
+except ImportError:  # pragma: no cover - fallback for non-macOS platforms
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import torch
+
+    _USE_MLX = False
 
 from median.utils import median_logger
 
@@ -16,7 +23,12 @@ def load_model():
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     model_name = "mlx-community/Mistral-7B-Instruct-v0.2-4bit"
-    model, tokenizer = load(model_name, lazy=False)
+    if _USE_MLX:
+        model, tokenizer = load(model_name, lazy=False)
+    else:  # fallback to a lightweight Transformers model
+        model_name = "distilgpt2"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name)
     median_logger.info("Loaded model and tokenizer")
     return model, tokenizer
 
@@ -35,7 +47,17 @@ def run_inference(model, tokenizer, prompt, model_config):
         str: The generated output based on the model and prompt.
     """
 
-    return generate(model, tokenizer, prompt=prompt, **model_config)
+    if _USE_MLX:
+        return generate(model, tokenizer, prompt=prompt, **model_config)
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids
+    with torch.no_grad():
+        output_ids = model.generate(
+            input_ids,
+            max_new_tokens=model_config.get("max_tokens", 256),
+            temperature=model_config.get("temp", 0.7),
+            repetition_penalty=model_config.get("repetition_penalty", 1.1),
+        )
+    return tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
 
 def generation(content: str, language: str, followings: str):
